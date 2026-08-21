@@ -9,6 +9,12 @@ CRITICAL RULES:
 - If a section has no evidence, return an empty list for it.
 - Quantifiable accomplishments must include the actual number/metric from the text \
 (e.g. "Reduced latency by 40%"), not a paraphrase that drops the number.
+- "Projects" are NOT limited to a dedicated "Projects" section. Most technical resumes \
+describe specific initiatives, systems, or features as bullet points under a job title \
+instead (e.g. "Built X to achieve Y", "Led migration of Z"). Extract each such distinct \
+initiative as a project too, using the resume's own wording -- do not leave projects empty \
+just because there's no separate "Projects" heading. Only leave it empty if the resume \
+genuinely contains no describable initiatives at all.
 - Output must be a single JSON object matching the provided schema exactly."""
 
 

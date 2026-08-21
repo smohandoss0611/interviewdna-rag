@@ -91,8 +91,16 @@ class OpenAILLMService(LLMService):
         if self._client is None:
             from openai import OpenAI
 
+            # max_retries=0 disables the openai SDK's OWN hidden automatic
+            # retry-on-429/5xx behavior. Without this, a rate limit inside a
+            # single attempt of OUR retry loop could silently wait 16+
+            # seconds before we even see it -- two independent retry systems
+            # stacking on top of each other, invisible in our own logs. We
+            # handle rate limits explicitly ourselves instead (see
+            # _sleep_for_rate_limit below), so this is the only retry layer.
             self._client = OpenAI(
-                api_key=self.api_key, base_url=self.base_url, timeout=self.request_timeout
+                api_key=self.api_key, base_url=self.base_url,
+                timeout=self.request_timeout, max_retries=0,
             )
         return self._client
 
@@ -248,13 +256,28 @@ class OpenAILLMService(LLMService):
                     {"role": "user", "content": f"That was not valid JSON matching the schema. Error: {exc}. Return ONLY corrected valid JSON, with no reasoning or explanation text."}
                 )
             except Exception as exc:
-                # Covers server-side rejections too (e.g. Groq's
+                last_error = exc
+                wait_s = _rate_limit_wait_seconds(exc)
+                if wait_s is not None:
+                    # Explicit, VISIBLE rate-limit handling -- this replaces
+                    # the openai SDK's own hidden automatic retry (now
+                    # disabled via max_retries=0 on the client), so a 429
+                    # shows up clearly in logs with a known wait time instead
+                    # of silently blocking inside a single attempt. The
+                    # request itself wasn't malformed, so we do NOT add a
+                    # corrective message -- just wait and resend as-is.
+                    logger.warning(
+                        "invoke_structured() attempt %d/%d rate-limited -- waiting %.1fs before retry",
+                        attempt + 1, max_retries + 1, wait_s,
+                    )
+                    time.sleep(wait_s)
+                    continue
+                # Covers other server-side rejections (e.g. Groq's
                 # "json_validate_failed" 400 error) -- these previously fell
                 # through with NO correction added to working_messages, so
                 # every retry sent the exact same request and failed
                 # identically each time. Now we still nudge the model on
                 # retry instead of blindly repeating.
-                last_error = exc
                 logger.exception("invoke_structured() attempt %d/%d raised an API error", attempt + 1, max_retries + 1)
                 working_messages.append(
                     {"role": "user", "content": (
@@ -267,6 +290,38 @@ class OpenAILLMService(LLMService):
         raise LLMStructuredOutputError(
             f"Could not obtain valid '{schema.__name__}' JSON after {max_retries + 1} attempts: {last_error}"
         )
+
+
+def _rate_limit_wait_seconds(exc: Exception, default: float = 5.0, cap: float = 30.0) -> float | None:
+    """Returns how long to wait before retrying if `exc` looks like a rate
+    limit error, or None if it's unrelated to rate limiting (so the caller
+    falls through to normal error-correction retry logic instead).
+
+    Prefers the server's own Retry-After header when present (most
+    accurate), falls back to a fixed default, capped so a misbehaving
+    header can't stall a request for an unreasonable amount of time."""
+    try:
+        from openai import RateLimitError
+
+        if isinstance(exc, RateLimitError):
+            response = getattr(exc, "response", None)
+            if response is not None:
+                header_val = response.headers.get("retry-after")
+                if header_val:
+                    try:
+                        return min(float(header_val), cap)
+                    except ValueError:
+                        pass
+            return default
+    except ImportError:
+        pass
+
+    # Fallback heuristic for providers/errors that don't map cleanly to
+    # openai.RateLimitError but clearly indicate rate limiting.
+    msg = str(exc).lower()
+    if "429" in msg or "rate limit" in msg or "too many requests" in msg:
+        return default
+    return None
 
 
 def _extract_json_object(text: str) -> str:

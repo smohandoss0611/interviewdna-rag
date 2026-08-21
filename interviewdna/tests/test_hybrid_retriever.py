@@ -73,3 +73,56 @@ def test_hybrid_retrieve_skips_reranker_when_disabled():
         hybrid_retrieve("q", top_k=1, use_reranker=False)
 
     mock_rerank.assert_not_called()
+
+
+def test_reranker_default_controlled_by_env_var(monkeypatch):
+    """Regression test: this is the fix for a real production OOM crash on
+    Render's free tier (512MB limit) -- loading the reranker's second
+    PyTorch model pushed memory over the ceiling. ENABLE_RERANKER=false
+    must skip it WITHOUT the caller needing to pass use_reranker explicitly
+    everywhere, since that default is what actually gets deployed."""
+    fake_pinecone = MagicMock()
+    fake_pinecone.query.return_value = [{"id": "a", "text": "x"}]
+    fake_bm25 = MagicMock()
+    fake_bm25.search.return_value = []
+
+    monkeypatch.setenv("ENABLE_RERANKER", "false")
+    with patch("rag.hybrid_retriever.get_pinecone_store", return_value=fake_pinecone), \
+         patch("rag.hybrid_retriever.get_bm25_store", return_value=fake_bm25), \
+         patch("rag.hybrid_retriever.cross_encoder_rerank") as mock_rerank:
+        hybrid_retrieve("q", top_k=1)  # use_reranker not passed -- should read env var
+
+    mock_rerank.assert_not_called()
+
+
+def test_reranker_enabled_by_default_when_env_var_unset(monkeypatch):
+    fake_pinecone = MagicMock()
+    fake_pinecone.query.return_value = [{"id": "a", "text": "x"}]
+    fake_bm25 = MagicMock()
+    fake_bm25.search.return_value = []
+
+    monkeypatch.delenv("ENABLE_RERANKER", raising=False)
+    with patch("rag.hybrid_retriever.get_pinecone_store", return_value=fake_pinecone), \
+         patch("rag.hybrid_retriever.get_bm25_store", return_value=fake_bm25), \
+         patch("rag.hybrid_retriever.cross_encoder_rerank", return_value=[]) as mock_rerank:
+        hybrid_retrieve("q", top_k=1)
+
+    mock_rerank.assert_called_once()
+
+
+def test_explicit_use_reranker_overrides_env_var(monkeypatch):
+    """Passing use_reranker explicitly should always win over the env var,
+    so call sites that genuinely need it off/on for a specific reason
+    aren't at the mercy of global config."""
+    fake_pinecone = MagicMock()
+    fake_pinecone.query.return_value = [{"id": "a", "text": "x"}]
+    fake_bm25 = MagicMock()
+    fake_bm25.search.return_value = []
+
+    monkeypatch.setenv("ENABLE_RERANKER", "true")
+    with patch("rag.hybrid_retriever.get_pinecone_store", return_value=fake_pinecone), \
+         patch("rag.hybrid_retriever.get_bm25_store", return_value=fake_bm25), \
+         patch("rag.hybrid_retriever.cross_encoder_rerank") as mock_rerank:
+        hybrid_retrieve("q", top_k=1, use_reranker=False)  # explicit False overrides env=true
+
+    mock_rerank.assert_not_called()
