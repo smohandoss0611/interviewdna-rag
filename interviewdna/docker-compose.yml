@@ -1,0 +1,62 @@
+version: "3.9"
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # Uncomment to give the container GPU access (requires nvidia-container-toolkit):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    restart: unless-stopped
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    # Pulls whatever OLLAMA_MODEL is set to in .env (docker-compose reads
+    # .env automatically for variable substitution). Falls back to
+    # qwen2.5:7b -- the current recommended default -- if unset. Keep this
+    # in sync with .env.example's OLLAMA_MODEL default; a mismatch here
+    # means Ollama has a different model downloaded than the app asks for,
+    # which fails with "model not found" on the very first LLM call.
+    entrypoint: ["sh", "-c", "sleep 3 && OLLAMA_HOST=ollama:11434 ollama pull ${OLLAMA_MODEL:-qwen2.5:7b}"]
+    environment:
+      - OLLAMA_HOST=ollama:11434
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - INTERVIEWDNA_API_BASE=http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  ollama_data:

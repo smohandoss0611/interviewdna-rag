@@ -1,0 +1,35 @@
+# --- Core app ---------------------------------------------------------
+streamlit>=1.38.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+python-dotenv>=1.0.1
+pydantic>=2.8.0
+requests>=2.32.0
+
+# --- LLM Provider(s) -----------------------------------------------------
+# langgraph is required regardless of provider.
+langgraph>=0.2.60
+
+# openai is OPTIONAL -- only needed if LLM_PROVIDER=openai in .env. The
+# default provider is Ollama (free, local), which needs no extra package
+# here since it talks to the Ollama server over plain HTTP (see requests
+# below). Uncomment if you're using the OpenAI provider:
+# openai>=1.40.0
+
+# --- RAG ------------------------------------------------------------
+llama-index-core>=0.11.0
+pinecone>=5.0.0
+sentence-transformers>=3.0.0
+rank-bm25>=0.2.2
+
+# --- Long-term memory -------------------------------------------------
+mem0ai>=0.1.30
+
+# --- Document parsing --------------------------------------------------
+pymupdf>=1.24.0
+python-docx>=1.1.2
+
+# --- Testing ------------------------------------------------------------
+pytest>=8.3.0
+pytest-mock>=3.14.0

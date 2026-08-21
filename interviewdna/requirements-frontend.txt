@@ -1,0 +1,9 @@
+# Minimal dependency set for deploying frontend/streamlit_app.py on its own
+# (e.g. Streamlit Community Cloud). The frontend only ever calls the FastAPI
+# backend over HTTP -- it never imports langgraph/llama-index/pinecone/mem0/
+# sentence-transformers/pymupdf/etc. directly, so none of those belong here.
+#
+# On Streamlit Community Cloud: Advanced settings -> "Requirements file" ->
+# requirements-frontend.txt
+streamlit>=1.38.0
+requests>=2.32.0
