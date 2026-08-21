@@ -18,6 +18,15 @@ langgraph>=0.2.60
 # openai>=1.40.0
 
 # --- RAG ------------------------------------------------------------
+# CPU-only torch build: pip installs the full CUDA-bundled torch by
+# default, which is dramatically larger on disk and at import time than the
+# CPU-only build -- pointless weight on hosting with no GPU at all (e.g.
+# Render), and a real contributor to hitting tight memory ceilings there.
+# This extra index MUST come before sentence-transformers in this file so
+# pip resolves torch from it rather than the default PyPI (CUDA) wheel.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
 llama-index-core>=0.11.0
 pinecone>=5.0.0
 sentence-transformers>=3.0.0
