@@ -12,8 +12,11 @@ in .env for verbose per-node agent tracing (see logging_config.py).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import time
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 
@@ -24,16 +27,84 @@ from logging_config import configure_logging
 configure_logging()
 
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes import resume, job, match, interview
 
 logger = logging.getLogger("interviewdna.api")
 
+
+async def warmup_llm() -> None:
+    """If using Ollama, force the model to load into memory NOW, at
+    container startup, instead of on a real user's first request.
+
+    Ollama's first call after starting has to actually load the model's
+    weights into RAM -- on CPU-constrained hardware this can take minutes,
+    dwarfing every call after it (observed in production: attempt 1 timed
+    out at 300s doing this cold load, attempt 2 with the model already
+    warm succeeded in 117s -- a ~3x difference from this alone). Paying
+    that cost once at startup, which nobody is impatiently waiting on,
+    instead of during a user's first real request, is a meaningful fix for
+    exactly that gap.
+
+    No-op for hosted providers (OpenAI-compatible/Groq/etc.) -- there's no
+    local model to warm up, and we don't want to burn an extra API call on
+    every restart for no benefit.
+    """
+    if os.getenv("LLM_PROVIDER", "ollama").lower() != "ollama":
+        return
+
+    from llm.factory import get_llm_service
+
+    llm = get_llm_service()
+    logger.info("Warming up Ollama model (forcing it to load into memory before serving traffic)...")
+    start = time.monotonic()
+
+    # Retry briefly: docker-compose's `depends_on` only waits for the ollama
+    # CONTAINER to start, not for Ollama's HTTP server inside it to actually
+    # be listening yet -- a real, common race when both containers start
+    # together. A few short retries absorbs that without needing a more
+    # elaborate readiness-check mechanism.
+    max_attempts = 5
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await run_in_threadpool(llm.invoke, [{"role": "user", "content": "Say OK."}])
+            logger.info(
+                "Ollama warmup complete in %.1fs -- model is now resident in memory",
+                time.monotonic() - start,
+            )
+            return
+        except Exception as exc:
+            if attempt == max_attempts:
+                # Non-fatal: the app still starts either way -- the first
+                # real request just pays the cold-load cost instead, same
+                # as before this fix existed.
+                logger.warning(
+                    "Ollama warmup failed after %d attempt(s) (%s) -- the app will "
+                    "still start, but the first real request may be slow instead.",
+                    max_attempts, exc,
+                )
+                return
+            logger.info(
+                "Ollama not ready yet for warmup (attempt %d/%d: %s) -- retrying in 5s",
+                attempt, max_attempts, exc,
+            )
+            await asyncio.sleep(5)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await warmup_llm()
+    yield
+    # No shutdown cleanup needed.
+
+
 app = FastAPI(
     title="InterviewDNA API",
     description="Personalized Agentic RAG AI Interview Coach",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

@@ -213,8 +213,21 @@ class OpenAILLMService(LLMService):
             }
         ]
 
+        # Rate limits get their OWN separate retry budget, tracked outside
+        # the main content-correction attempt count. Without this, a rate
+        # limit hitting on the LAST content attempt would sleep for the
+        # full wait time and then immediately fail anyway -- there was no
+        # attempt left to actually use after the wait (a real bug we hit in
+        # production: an 18s wait that accomplished nothing). Rate limits
+        # are an infrastructure-level transient issue, not evidence the
+        # request itself was malformed, so they shouldn't eat into the
+        # budget meant for correcting genuinely bad output.
+        MAX_RATE_LIMIT_RETRIES = 3
+        rate_limit_retries_used = 0
+
         last_error: Exception | None = None
-        for attempt in range(max_retries + 1):
+        attempt = 0
+        while attempt <= max_retries:
             attempt_start = time.monotonic()
             try:
                 resp = client.chat.completions.create(
@@ -255,29 +268,35 @@ class OpenAILLMService(LLMService):
                 working_messages.append(
                     {"role": "user", "content": f"That was not valid JSON matching the schema. Error: {exc}. Return ONLY corrected valid JSON, with no reasoning or explanation text."}
                 )
+                attempt += 1
             except Exception as exc:
                 last_error = exc
                 wait_s = _rate_limit_wait_seconds(exc)
-                if wait_s is not None:
+                if wait_s is not None and rate_limit_retries_used < MAX_RATE_LIMIT_RETRIES:
                     # Explicit, VISIBLE rate-limit handling -- this replaces
                     # the openai SDK's own hidden automatic retry (now
                     # disabled via max_retries=0 on the client), so a 429
                     # shows up clearly in logs with a known wait time instead
                     # of silently blocking inside a single attempt. The
                     # request itself wasn't malformed, so we do NOT add a
-                    # corrective message -- just wait and resend as-is.
+                    # corrective message and do NOT advance `attempt` --
+                    # this retries the SAME content-attempt slot after
+                    # waiting, using the separate rate-limit budget instead.
+                    rate_limit_retries_used += 1
                     logger.warning(
-                        "invoke_structured() attempt %d/%d rate-limited -- waiting %.1fs before retry",
-                        attempt + 1, max_retries + 1, wait_s,
+                        "invoke_structured() rate-limited -- waiting %.1fs before retry "
+                        "(rate-limit retry %d/%d, does not consume content-attempt %d/%d)",
+                        wait_s, rate_limit_retries_used, MAX_RATE_LIMIT_RETRIES, attempt + 1, max_retries + 1,
                     )
                     time.sleep(wait_s)
                     continue
                 # Covers other server-side rejections (e.g. Groq's
-                # "json_validate_failed" 400 error) -- these previously fell
-                # through with NO correction added to working_messages, so
-                # every retry sent the exact same request and failed
-                # identically each time. Now we still nudge the model on
-                # retry instead of blindly repeating.
+                # "json_validate_failed" 400 error), or a rate limit that
+                # has exhausted its own separate retry budget -- these
+                # previously fell through with NO correction added to
+                # working_messages, so every retry sent the exact same
+                # request and failed identically each time. Now we still
+                # nudge the model on retry instead of blindly repeating.
                 logger.exception("invoke_structured() attempt %d/%d raised an API error", attempt + 1, max_retries + 1)
                 working_messages.append(
                     {"role": "user", "content": (
@@ -286,6 +305,7 @@ class OpenAILLMService(LLMService):
                         "explanation text before or after it."
                     )}
                 )
+                attempt += 1
 
         raise LLMStructuredOutputError(
             f"Could not obtain valid '{schema.__name__}' JSON after {max_retries + 1} attempts: {last_error}"

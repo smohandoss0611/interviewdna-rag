@@ -50,7 +50,17 @@ services:
       dockerfile: Dockerfile.frontend
     ports:
       - "8501:8501"
+    env_file:
+      - .env
     environment:
+      # Explicit override: inside Docker's network, the frontend must reach
+      # the API container by its Compose service name ("api"), not
+      # "localhost" -- this intentionally overrides whatever
+      # INTERVIEWDNA_API_BASE might be set to in .env for local/non-Docker
+      # use. Every OTHER variable in .env (like INTERVIEWDNA_FRONTEND_TIMEOUT)
+      # now reaches this container via env_file above -- previously it
+      # didn't, silently falling back to hardcoded defaults no matter what
+      # you set in .env.
       - INTERVIEWDNA_API_BASE=http://api:8000
     depends_on:
       - api

@@ -92,13 +92,53 @@ way `pytest` catches a code change that breaks behavior.
    the harness testing itself, and it's what makes the eval trustworthy
    rather than just "a script that might work."
 
+## RAG evaluation (`evals/rag_cases.py`, `evals/rag_scorers.py`)
+
+Everything above checks the 12 core LLM calls (extraction, scoring,
+planning). RAG evaluation is a different, more specific question: **is
+retrieval actually finding the right thing, and does generation stay
+faithful to what it found?**
+
+Two kinds of check, because they need genuinely different techniques:
+
+| Question | Technique | Where |
+|---|---|---|
+| Did retrieval find the relevant chunk at all? | Deterministic (substring match against a known corpus) | `relevant_chunk_found` |
+| Is the relevant chunk actually ranked ABOVE an irrelevant one? | Deterministic (position comparison) | `relevant_chunk_ranked_above` |
+| Does generated text (e.g. coaching) only claim things the retrieved context supports? | **LLM-as-judge** -- this genuinely needs semantic judgment, no keyword check can catch "the model added a plausible-sounding fact that isn't in the source" | `judge_faithfulness` |
+
+That third one is the "second layer" mentioned above, now actually built:
+a structured LLM call (`FaithfulnessJudgment`, `evals/schemas.py`) whose
+only job is to compare generated text against its source context and flag
+any unsupported claims. Same pattern as every other LLM call in this
+app -- structured output, validated schema -- just aimed at judging output
+quality instead of producing application data.
+
+Run it the same way, since it's included in the main runner:
+```bash
+python evals/run_evals.py
+```
+
+The RAG cases seed a small, controlled corpus (one clearly relevant chunk,
+one similar-sounding-but-irrelevant one) into a throwaway session before
+each run, so results are reproducible and never depend on whatever happens
+to already be sitting in your real Pinecone index.
+
 ## What this deliberately does NOT do (yet)
 
-This harness uses simple, deterministic checks (keyword matching, score
-thresholds) — no "ask another AI to judge the answer" (an **LLM-as-judge**
-scorer). That's a real, more advanced technique, useful for fuzzier
-questions like "is this coaching text well-written and encouraging?" —
-but it's worth mastering deterministic evals first, since they're free,
-instant, and you can fully explain every pass/fail. Add LLM-judge scoring
-as a second layer once you've outgrown what keyword/threshold checks can
-tell you.
+`evals/cases.py` still uses simple, deterministic checks on purpose (keyword
+matching, score thresholds) for the extraction/quality evals — that's still
+the right first tool, since it's free, instant, and every pass/fail is
+fully explainable. LLM-as-judge (now built, see the RAG evaluation section
+above) is genuinely the right *second* layer, reached for specifically
+where deterministic checks can't tell you enough — like faithfulness,
+which requires actually understanding whether a claim is supported.
+
+Two things still missing if you want to go further:
+- **Context recall** (of all the relevant chunks that exist, how many did
+  retrieval actually find?) — needs a bigger labeled corpus than the
+  two-chunk one here to be meaningful; worth building once you have real
+  production data to draw a "ground truth" set from.
+- **Answer relevancy** (is the generated coaching actually relevant to the
+  original question, independent of faithfulness?) — a natural extension
+  of `judge_faithfulness`'s pattern, just judging a different property.

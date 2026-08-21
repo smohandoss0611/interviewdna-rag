@@ -27,7 +27,10 @@ from logging_config import configure_logging
 configure_logging()
 
 from llm.factory import get_llm_service
-from evals.cases import ALL_CASES
+from evals.cases import ALL_CASES as EXTRACTION_AND_QUALITY_CASES
+from evals.rag_cases import RAG_CASES
+
+ALL_CASES = EXTRACTION_AND_QUALITY_CASES + RAG_CASES
 
 
 def main():

@@ -44,7 +44,14 @@ API_BASE = _resolve_api_base()
 # can genuinely take 60-90+ seconds, and invoke_structured() retries up to
 # 3x on malformed JSON -- so this needs to be generous, not the default
 # "just hang forever" behavior of requests with no timeout at all.
-BACKEND_TIMEOUT = 180
+#
+# IMPORTANT: this must stay >= the backend's own OLLAMA_REQUEST_TIMEOUT
+# (see .env.example), ideally with real margin for retries -- otherwise
+# Streamlit gives up and shows an error BEFORE the backend even finishes,
+# even though the backend is still legitimately working. If you raise
+# OLLAMA_REQUEST_TIMEOUT because Ollama is slow on your hardware, raise
+# INTERVIEWDNA_FRONTEND_TIMEOUT here to match (with margin).
+BACKEND_TIMEOUT = int(os.getenv("INTERVIEWDNA_FRONTEND_TIMEOUT", "180"))
 
 
 def backend_post(path: str, **kwargs):
@@ -133,6 +140,7 @@ def _init_state():
         # whether a new question actually loaded after Submit, rather than
         # relying on eyeballing whether the question text changed.
         "turn_number": 0,
+        "analyzing_in_progress": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -175,30 +183,45 @@ with tab_resume:
     with col2:
         jd_text = st.text_area("Target Job Description", height=220)
 
-    if st.button("Analyze Resume & Job", type="primary", disabled=not (resume_file and jd_text)):
-        with st.spinner("Extracting Resume DNA..."):
-            resp = backend_post(
-                "/resume/analyze",
-                files={"file": (resume_file.name, resume_file.getvalue())},
-            )
-            data = resp.json()
-            st.session_state.session_id = data["session_id"]
-            st.session_state.resume_dna = data["resume_dna"]
+    analyzing = st.session_state.get("analyzing_in_progress", False)
+    if st.button("Analyze Resume & Job", type="primary",
+                 disabled=not (resume_file and jd_text) or analyzing):
+        if analyzing:
+            # Defensive guard: even if something (a rerun, a race between
+            # UI events, anything) tries to fire this a second time while
+            # the first call is still in flight, this stops it from ever
+            # reaching the backend as a second concurrent request -- which
+            # is exactly what caused two independent LLM calls to compete
+            # for the same CPU and both time out in production.
+            st.warning("Analysis already in progress -- please wait for it to finish.")
+        else:
+            st.session_state.analyzing_in_progress = True
+            try:
+                with st.spinner("Extracting Resume DNA..."):
+                    resp = backend_post(
+                        "/resume/analyze",
+                        files={"file": (resume_file.name, resume_file.getvalue())},
+                    )
+                    data = resp.json()
+                    st.session_state.session_id = data["session_id"]
+                    st.session_state.resume_dna = data["resume_dna"]
 
-        with st.spinner("Extracting Job DNA..."):
-            resp = backend_post(
-                "/job/analyze",
-                json={"session_id": st.session_state.session_id, "job_description_text": jd_text},
-            )
-            st.session_state.job_dna = resp.json()["job_dna"]
+                with st.spinner("Extracting Job DNA..."):
+                    resp = backend_post(
+                        "/job/analyze",
+                        json={"session_id": st.session_state.session_id, "job_description_text": jd_text},
+                    )
+                    st.session_state.job_dna = resp.json()["job_dna"]
 
-        with st.spinner("Computing alignment & interview strategy..."):
-            resp = backend_post("/match", json={"session_id": st.session_state.session_id})
-            match_data = resp.json()
-            st.session_state.alignment = match_data["alignment"]
-            st.session_state.strategy = match_data["strategy"]
+                with st.spinner("Computing alignment & interview strategy..."):
+                    resp = backend_post("/match", json={"session_id": st.session_state.session_id})
+                    match_data = resp.json()
+                    st.session_state.alignment = match_data["alignment"]
+                    st.session_state.strategy = match_data["strategy"]
 
-        st.success("Analysis complete — head to the Interview tab.")
+                st.success("Analysis complete — head to the Interview tab.")
+            finally:
+                st.session_state.analyzing_in_progress = False
 
     if st.session_state.resume_dna:
         st.divider()

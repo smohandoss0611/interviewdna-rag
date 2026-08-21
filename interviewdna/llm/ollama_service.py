@@ -31,11 +31,16 @@ class OllamaLLMService(LLMService):
         self,
         base_url: str | None = None,
         model: str | None = None,
-        request_timeout: int = 120,
+        request_timeout: int | None = None,
     ):
         self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")).rstrip("/")
         self.model = model or os.getenv("OLLAMA_MODEL", "llama3.1")
-        self.request_timeout = request_timeout
+        # Was hardcoded at 120s with no way to raise it without editing code.
+        # CPU-only inference -- especially under Docker Desktop's default
+        # (often conservative) CPU/RAM allocation on Mac -- can genuinely
+        # need longer than 120s for a 7B-class model on some hardware. Set
+        # OLLAMA_REQUEST_TIMEOUT in .env to raise this without touching code.
+        self.request_timeout = request_timeout or int(os.getenv("OLLAMA_REQUEST_TIMEOUT", "120"))
         logger.info(
             "OllamaLLMService initialized (base_url=%s, model=%s, timeout=%ss)",
             self.base_url, self.model, self.request_timeout,
